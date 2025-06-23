@@ -181,13 +181,13 @@ impl KcpSocket {
         self.sent_first = true;
 
         if self.kcp.wait_snd() >= self.kcp.snd_wnd() as usize || self.kcp.wait_snd() >= self.kcp.rmt_wnd() as usize {
-            self.kcp.flush()?;
+            let _ = self.kcp.flush()?;
         }
 
         self.last_update = Instant::now();
 
         if self.flush_write {
-            self.kcp.flush()?;
+            let _ = self.kcp.flush()?;
         }
 
         Ok(n).into()
@@ -251,7 +251,7 @@ impl KcpSocket {
     }
 
     pub fn flush(&mut self) -> KcpResult<()> {
-        self.kcp.flush()?;
+        let _ = self.kcp.flush()?;
         self.last_update = Instant::now();
         Ok(())
     }
@@ -286,7 +286,10 @@ impl KcpSocket {
 
     pub fn update(&mut self) -> KcpResult<Instant> {
         let now = now_millis();
-        self.kcp.update(now)?;
+        let packet_loss_detected = self.kcp.update(now)?;
+        if packet_loss_detected {
+            self.scream.on_packet_loss();
+        }
 
         
         let rtt = Duration::from_millis(self.kcp.rx_srtt as u64);

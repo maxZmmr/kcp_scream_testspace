@@ -911,7 +911,7 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Flush pending data in buffer.
-    pub fn flush(&mut self) -> KcpResult<()> {
+    pub fn flush(&mut self) -> KcpResult<bool> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
             return Err(Error::NeedUpdate);
@@ -1051,13 +1051,13 @@ impl<Output: Write> Kcp<Output> {
             self.incr = self.mss;
         }
 
-        Ok(())
+        Ok(lost || change > 0)
     }
 
     /// Update state every 10ms ~ 100ms.
     ///
     /// Or you can ask `check` when to call this again.
-    pub fn update(&mut self, current: u32) -> KcpResult<()> {
+    pub fn update(&mut self, current: u32) -> KcpResult<bool> {
         self.current = current;
 
         if !self.updated {
@@ -1077,10 +1077,10 @@ impl<Output: Write> Kcp<Output> {
             if timediff(self.current, self.ts_flush) >= 0 {
                 self.ts_flush = self.current + self.interval;
             }
-            self.flush()?;
+            return self.flush();
         }
 
-        Ok(())
+        Ok(false)
     }
 
     /// Determine when you should call `update`.
