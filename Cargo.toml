@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "kcp_test",      
+    "tokio_kcp",  
+]
+
+[package]
+name = "scream_kcp_lab"
+version = "0.1.0"
+edition = "2021"
