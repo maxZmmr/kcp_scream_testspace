@@ -3,6 +3,7 @@
 use std::cmp;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::f32::consts::E;
 use std::fmt::{self, Debug};
 use std::io::{self, Cursor, Read, Write};
 
@@ -233,6 +234,9 @@ pub struct Kcp<Output: Write> {
     /// Get conv from the next input call
     input_conv: bool,
 
+    /// use external congestion control
+    external_cc: bool,
+
     output: KcpOutput<Output>,
 }
 
@@ -346,6 +350,8 @@ impl<Output: Write> Kcp<Output> {
 
             input_conv: false,
             output: KcpOutput(output),
+
+            external_cc: true,
         }
     }
 
@@ -794,28 +800,31 @@ impl<Output: Write> Kcp<Output> {
             self.parse_fastack(max_ack, latest_ts);
         }
 
-        if timediff(self.snd_una, old_una) > 0 && self.cwnd < self.rmt_wnd {
-            let mss = self.mss;
-            if self.cwnd < self.ssthresh {
-                self.cwnd += 1;
-                self.incr += mss;
-            } else {
-                if self.incr < mss {
-                    self.incr = mss;
+        if !self.external_cc {
+            if timediff(self.snd_una, old_una) > 0 && self.cwnd < self.rmt_wnd {
+                let mss = self.mss;
+                if self.cwnd < self.ssthresh {
+                    self.cwnd += 1;
+                    self.incr += mss;
+                } else {
+                    if self.incr < mss {
+                        self.incr = mss;
+                    }
+                    self.incr += (mss * mss) / self.incr + (mss / 16);
+                    if (self.cwnd as usize + 1) * mss <= self.incr {
+                        // self.cwnd += 1;
+                        self.cwnd = ((self.incr + mss - 1) / if mss > 0 { mss } else { 1 }) as u16;
+                    }
                 }
-                self.incr += (mss * mss) / self.incr + (mss / 16);
-                if (self.cwnd as usize + 1) * mss <= self.incr {
-                    // self.cwnd += 1;
-                    self.cwnd = ((self.incr + mss - 1) / if mss > 0 { mss } else { 1 }) as u16;
+                if self.cwnd > self.rmt_wnd {
+                    self.cwnd = self.rmt_wnd;
+                    self.incr = self.rmt_wnd as usize * mss;
                 }
-            }
-            if self.cwnd > self.rmt_wnd {
-                self.cwnd = self.rmt_wnd;
-                self.incr = self.rmt_wnd as usize * mss;
             }
         }
 
         Ok(acked_sns)
+
     }
 
     fn wnd_unused(&self) -> u16 {
@@ -1032,31 +1041,33 @@ impl<Output: Write> Kcp<Output> {
             self.buf.clear();
         }
 
-        // update ssthresh
-        if change > 0 {
-            let inflight = self.snd_nxt - self.snd_una;
-            self.ssthresh = inflight as u16 / 2;
-            if self.ssthresh < KCP_THRESH_MIN {
-                self.ssthresh = KCP_THRESH_MIN;
+        if !self.external_cc {
+            // update ssthresh
+            if change > 0 {
+                let inflight = self.snd_nxt - self.snd_una;
+                self.ssthresh = inflight as u16 / 2;
+                if self.ssthresh < KCP_THRESH_MIN {
+                    self.ssthresh = KCP_THRESH_MIN;
+                }
+                self.cwnd = self.ssthresh + resent as u16;
+                self.incr = self.cwnd as usize * self.mss;
             }
-            self.cwnd = self.ssthresh + resent as u16;
-            self.incr = self.cwnd as usize * self.mss;
-        }
-
-        if lost {
-            self.ssthresh = cwnd / 2;
-            if self.ssthresh < KCP_THRESH_MIN {
-                self.ssthresh = KCP_THRESH_MIN;
+            
+            if lost {
+                self.ssthresh = cwnd / 2;
+                if self.ssthresh < KCP_THRESH_MIN {
+                    self.ssthresh = KCP_THRESH_MIN;
+                }
+                self.cwnd = 1;
+                self.incr = self.mss;
             }
-            self.cwnd = 1;
-            self.incr = self.mss;
+            
+            if self.cwnd < 1 {
+                self.cwnd = 1;
+                self.incr = self.mss;
+            }
         }
-
-        if self.cwnd < 1 {
-            self.cwnd = 1;
-            self.incr = self.mss;
-        }
-
+            
         Ok((lost || change > 0, new_packets))
     }
 
@@ -1221,6 +1232,11 @@ impl<Output: Write> Kcp<Output> {
     #[inline]
     pub fn wait_snd(&self) -> usize {
         self.snd_buf.len() + self.snd_queue.len()
+    }
+
+    /// Enable / disable external congestion contol
+    pub fn set_external_congestion_control(&mut self, enabled: bool) {
+        self.external_cc = enabled;
     }
 
     /// Get `rmt_wnd`, remote window size

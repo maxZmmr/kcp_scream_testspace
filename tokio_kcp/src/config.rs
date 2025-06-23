@@ -77,6 +77,8 @@ pub struct KcpConfig {
     pub stream: bool,
     /// Allow recv 0 byte packet. KCP Segments with 0 byte data are skipped by default.
     pub allow_recv_empty_packet: bool,
+    /// Used to enable or disable the external congestion control (SCReAM)
+    pub use_external_congestion_control: bool,
 }
 
 impl Default for KcpConfig {
@@ -90,6 +92,7 @@ impl Default for KcpConfig {
             flush_acks_input: false,
             stream: false,
             allow_recv_empty_packet: false,
+            use_external_congestion_control: false,
         }
     }
 }
@@ -108,5 +111,7 @@ impl KcpConfig {
         );
 
         k.set_wndsize(self.wnd_size.0, self.wnd_size.1);
+
+        k.set_external_congestion_control(self.use_external_congestion_control);
     }
 }

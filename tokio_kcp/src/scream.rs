@@ -24,6 +24,46 @@ enum ScreamState {
     Accelerate,
 }
 
+
+impl ScreamState {
+
+    fn on_ack(self, congestion_control: &mut ScreamCongestionControl, latest_rtt: Duration) -> ScreamState {
+
+        let queuing_delay = congestion_control.rtt.saturating_sub(congestion_control.base_rtt);
+
+        match self {
+            ScreamState::Normal => {
+                if queuing_delay > QDELAY_TARGET_HI {
+                    return ScreamState::Reduce;
+                }
+                // TODO: increase every 50_000 every 100ms -> not when on_ack gets called
+
+
+                congestion_control.target_bitrate += 20_000;
+            },
+            ScreamState::Reduce => {
+                if congestion_control.last_congestion_event_time.elapsed() < Duration::from_secs(5) {
+                    congestion_control.target_bitrate = (congestion_control.target_bitrate as f64 * 0.95) as u64;
+                } else if queuing_delay < QDELAY_TARGET_LO {
+                    return ScreamState::Normal
+                }
+            }
+            ScreamState::Accelerate => {
+                // return self
+            },
+        }
+        self
+    }
+
+    fn on_packet_loss(self, congestion_control: &mut ScreamCongestionControl) -> ScreamState {
+        congestion_control.target_bitrate = (congestion_control.target_bitrate as f64 * 0.7) as u64;
+        congestion_control.last_congestion_event_time = Instant::now();
+        ScreamState::Reduce
+    }
+
+}
+
+
 #[derive(Debug)]
 pub struct ScreamCongestionControl {
     target_bitrate: u64,
@@ -59,8 +99,8 @@ impl ScreamCongestionControl {
             qdelay_target: QDELAY_TARGET_LO,
             state: ScreamState::Normal,
             last_rtt_update_time: Instant::now(),
-            mult_bitrate_reduction: 0.9,  // Typische Werte
-            mult_bitrate_increase: 1.05,  // Typische Werte
+            mult_bitrate_reduction: 0.9,  
+            mult_bitrate_increase: 1.05,  
             r_target: 1_000_000, 
             last_congestion_event_time: Instant::now(),
 
@@ -80,14 +120,11 @@ impl ScreamCongestionControl {
     pub fn on_ack(&mut self, seq_number: u32) {
         if let Some(info) = self.packets_in_flight.remove(&seq_number) {
             
-            // rtt and min roundtrip time over 10s
             let latest_rtt = info.timestamp.elapsed();
-
-            if latest_rtt.as_nanos() == 0 {
-                return;
-            }
-            
+            if latest_rtt.as_nanos() == 0 { return; }
             self.rtt = latest_rtt;
+
+            // moving window base_roundtrip setting
             self.last_rtt_update_time = Instant::now();
             self.min_rtt_in_window = min(self.min_rtt_in_window, latest_rtt);
             let now = Instant::now();
@@ -104,22 +141,18 @@ impl ScreamCongestionControl {
 
             let queuing_delay = self.rtt.saturating_sub(self.base_rtt);
 
-            let delay_diff = queuing_delay.as_secs_f64() - self.target_delay.as_secs_f64();
-            if delay_diff > 0.0 {
-                let reduction_factor = 1.0 - (delay_diff * 2.0).min(0.5);
-                self.target_bitrate = ((self.target_bitrate as f64) * reduction_factor) as u64;
-            } else {
-                self.target_bitrate += 250_000; // increase by 250 kbps
-            }
 
-            self.target_bitrate = self.target_bitrate.clamp(500_000, 10_000_000); // clamp between  500kbps and 10 Mbps
+
+
+            self.state = self.state.on_ack(self, latest_rtt);
+
+            self.target_bitrate = self.target_bitrate.clamp(500_000, 10_000_000);
         }
     }
 
     pub fn on_packet_loss(&mut self) {
-        self.target_bitrate = (self.target_bitrate as f64 * 0.7) as u64;
-        self.target_bitrate = self.target_bitrate.clamp(500_000, 10_000_000); // clamp between  500kbps and 10 Mbps
-        self.packet_loss_occured = true;
+        self.state = self.state.on_packet_loss(self);
+        self.target_bitrate = self.target_bitrate.clamp(500_000, 10_000_000);
     }
     
 
@@ -132,6 +165,7 @@ impl ScreamCongestionControl {
         let cwnd = (bytes_per_sec as f64 * rtt_sec) as u32;
 
 
+        // output to csv file
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -157,9 +191,6 @@ impl ScreamCongestionControl {
             }   
             let _ = file.write_all(log_line.as_bytes());
         }
-
-
-
 
 
         // println!("[SCReAM] RTT: {:?}, Target Bitrate: {} kbps, Calculated CWND: {}", self.rtt, self.target_bitrate / 1000, cwnd);
