@@ -11,7 +11,12 @@ use kcp::{Error as KcpError, Kcp, KcpResult};
 use log::{error, trace};
 use tokio::{net::UdpSocket, sync::mpsc};
 
-use crate::{utils::now_millis, KcpConfig};
+use crate::{
+    utils::now_millis,
+    KcpConfig,
+    scream::ScreamCongestionControl,
+};
+
 
 /// Writer for sending packets to the underlying UdpSocket
 struct UdpOutput {
@@ -69,6 +74,7 @@ impl Write for UdpOutput {
 #[derive(Debug)]
 pub struct KcpSocket {
     kcp: Kcp<UdpOutput>,
+    scream: ScreamCongestionControl,
     last_update: Instant,
     socket: Arc<UdpSocket>,
     flush_write: bool,
@@ -105,6 +111,7 @@ impl KcpSocket {
 
         Ok(KcpSocket {
             kcp,
+            scream: ScreamCongestionControl::new(),
             last_update: Instant::now(),
             socket,
             flush_write: c.flush_write,
@@ -280,6 +287,18 @@ impl KcpSocket {
     pub fn update(&mut self) -> KcpResult<Instant> {
         let now = now_millis();
         self.kcp.update(now)?;
+
+        
+        let rtt = Duration::from_millis(self.kcp.rx_srtt as u64);
+        self.scream.on_ack(rtt);
+
+        let new_cwnd = self.scream.get_cwnd();
+        self.kcp.set_wndsize(self.kcp.snd_wnd(), new_cwnd as u16);
+
+
+
+
+
         let next = self.kcp.check(now);
 
         self.try_wake_pending_waker();

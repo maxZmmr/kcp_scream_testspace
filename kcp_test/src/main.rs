@@ -19,7 +19,8 @@ async fn main() -> std::io::Result<()> {
 }
 
 async fn run_server() -> std::io::Result<()> {
-    let config = KcpConfig::default();
+    let mut config = KcpConfig::default();
+    config.nodelay.nc = true;
     let mut listener = KcpListener::bind(config, "127.0.0.1:22333").await?;
     println!("Server lauscht auf 127.0.0.1:22333");
 
@@ -43,7 +44,8 @@ async fn run_server() -> std::io::Result<()> {
 }
 
 async fn run_client() -> std::io::Result<()> {
-    let config = KcpConfig::default();
+    let mut config = KcpConfig::default();
+    config.nodelay.nc = true;
     let server_addr: SocketAddr = "127.0.0.1:22333".parse().unwrap();
     
     let client_socket = UdpSocket::bind("127.0.0.1:0").await?;

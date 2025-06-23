@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "kcp_test",      
-    "tokio_kcp",  
+    "tokio_kcp", 
+    "kcp",
 ]
 
 [package]
