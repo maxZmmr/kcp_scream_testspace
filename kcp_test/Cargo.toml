@@ -1,0 +1,11 @@
+[package]
+name = "kcp_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+bytes = "1"
+
+tokio_kcp = { path = "../tokio_kcp" }
