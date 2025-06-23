@@ -126,14 +126,12 @@ impl KcpSocket {
 
     /// Call every time you got data from transmission
     pub fn input(&mut self, buf: &[u8]) -> KcpResult<bool> {
-        match self.kcp.input(buf) {
-            Ok(..) => {}
-            Err(KcpError::ConvInconsistent(expected, actual)) => {
-                trace!("[INPUT] Conv expected={} actual={} ignored", expected, actual);
-                return Ok(false);
-            }
-            Err(err) => return Err(err),
+        let acked_sns = self.kcp.input(buf)?;
+
+        for seq_number in acked_sns {
+            self.scream.on_ack(seq_number);
         }
+       
         self.last_update = Instant::now();
 
         if self.flush_ack_input {
@@ -286,18 +284,22 @@ impl KcpSocket {
 
     pub fn update(&mut self) -> KcpResult<Instant> {
         let now = now_millis();
-        let packet_loss_detected = self.kcp.update(now)?;
+        let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
+
         if packet_loss_detected {
             self.scream.on_packet_loss();
         }
 
-        
-        let rtt = Duration::from_millis(self.kcp.rx_srtt as u64);
-        self.scream.on_ack(rtt);
+        for (seq_number, size) in new_packets {
+            self.scream.on_packet_sent(seq_number, size);
+        }
 
-        let new_cwnd = self.scream.get_cwnd();
-        self.kcp.set_wndsize(self.kcp.snd_wnd(), new_cwnd as u16);
-
+        let new_cwnd_in_bytes = self.scream.get_cwnd();
+        let mss = self.kcp.mss() as u32;
+        if mss > 0 {
+            let new_snd_window = (new_cwnd_in_bytes / mss).max(2) as u16;
+            self.kcp.set_wndsize(new_snd_window, self.kcp.rcv_wnd());
+        }
 
 
 

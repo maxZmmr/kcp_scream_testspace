@@ -639,9 +639,9 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Call this when you received a packet from raw connection
-    pub fn input(&mut self, buf: &[u8]) -> KcpResult<usize> {
+    pub fn input(&mut self, buf: &[u8]) -> KcpResult<Vec<u32>> {
         let input_size = buf.len();
-
+        let mut acked_sns = Vec::new();
         trace!("[RI] {} bytes", buf.len());
 
         if buf.len() < KCP_OVERHEAD as usize {
@@ -693,7 +693,10 @@ impl<Output: Write> Kcp<Output> {
             }
 
             match cmd {
-                KCP_CMD_PUSH | KCP_CMD_ACK | KCP_CMD_WASK | KCP_CMD_WINS => {}
+                KCP_CMD_ACK => {
+                    acked_sns.push(sn);
+                },
+                KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS => {}
                 _ => {
                     debug!("input cmd={} unrecognized", cmd);
                     return Err(Error::UnsupportedCmd(cmd));
@@ -812,7 +815,7 @@ impl<Output: Write> Kcp<Output> {
             }
         }
 
-        Ok(buf.position() as usize)
+        Ok(acked_sns)
     }
 
     fn wnd_unused(&self) -> u16 {
@@ -911,7 +914,7 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Flush pending data in buffer.
-    pub fn flush(&mut self) -> KcpResult<bool> {
+    pub fn flush(&mut self) -> KcpResult<(bool, Vec<(u32, usize)>)> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
             return Err(Error::NeedUpdate);
@@ -937,6 +940,8 @@ impl<Output: Write> Kcp<Output> {
             cwnd = cmp::min(self.cwnd, cwnd);
         }
 
+        let mut new_packets = Vec::new();
+
         // move data from snd_queue to snd_buf
         while timediff(self.snd_nxt, self.snd_una + cwnd as u32) < 0 {
             match self.snd_queue.pop_front() {
@@ -952,6 +957,7 @@ impl<Output: Write> Kcp<Output> {
                     new_segment.rto = self.rx_rto;
                     new_segment.fastack = 0;
                     new_segment.xmit = 0;
+                    new_packets.push((new_segment.sn, new_segment.data.len()));
                     self.snd_buf.push_back(new_segment);
                 }
                 None => break,
@@ -1051,13 +1057,13 @@ impl<Output: Write> Kcp<Output> {
             self.incr = self.mss;
         }
 
-        Ok(lost || change > 0)
+        Ok((lost || change > 0, new_packets))
     }
 
     /// Update state every 10ms ~ 100ms.
     ///
     /// Or you can ask `check` when to call this again.
-    pub fn update(&mut self, current: u32) -> KcpResult<bool> {
+    pub fn update(&mut self, current: u32) -> KcpResult<(bool, Vec<(u32, usize)>)> {
         self.current = current;
 
         if !self.updated {
@@ -1080,7 +1086,7 @@ impl<Output: Write> Kcp<Output> {
             return self.flush();
         }
 
-        Ok(false)
+        Ok((false, Vec::new()))
     }
 
     /// Determine when you should call `update`.
