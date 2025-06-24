@@ -94,7 +94,7 @@ impl ScreamCongestionControl {
             rtt: Duration::from_millis(100), 
             base_rtt: Duration::from_secs(10),
             min_rtt_in_window: Duration::from_secs(10),
-            base_rtt_update_time: Instant::now() + BASE_RTT_WINDOW,
+            base_rtt_update_time: Instant::now(),
 
             qdelay_target: QDELAY_TARGET_LO,
             state: ScreamState::Normal,
@@ -124,28 +124,15 @@ impl ScreamCongestionControl {
             if latest_rtt.as_nanos() == 0 { return; }
             self.rtt = latest_rtt;
 
-            // moving window base_roundtrip setting
-            self.last_rtt_update_time = Instant::now();
-            self.min_rtt_in_window = min(self.min_rtt_in_window, latest_rtt);
-            let now = Instant::now();
-            let time_since_last_base_rtt_update = now.duration_since(self.last_rtt_update_time)
-
-
-
-            if now >= self.base_rtt_update_time {
-                self.base_rtt = self.min_rtt_in_window;
-
-                self.min_rtt_in_window = Duration::from_secs(10);
-                self.base_rtt_update_time = now + BASE_RTT_WINDOW;
+            // update base_rtt every 10 seconds
+            if self.base_rtt_update_time.elapsed() >= BASE_RTT_WINDOW {
+                self.base_rtt_update_time = Instant::now();
+                self.base_rtt = self.min_rtt_in_window;       
             }
-
+            self.min_rtt_in_window = min(self.min_rtt_in_window, latest_rtt);
             let queuing_delay = self.rtt.saturating_sub(self.base_rtt);
 
-
-
-
             self.state = self.state.on_ack(self, latest_rtt);
-
             self.target_bitrate = self.target_bitrate.clamp(500_000, 10_000_000);
         }
     }
