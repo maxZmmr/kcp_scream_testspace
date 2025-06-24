@@ -3,7 +3,6 @@
 use std::cmp;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
-use std::f32::consts::E;
 use std::fmt::{self, Debug};
 use std::io::{self, Cursor, Read, Write};
 
@@ -923,7 +922,7 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Flush pending data in buffer.
-    pub fn flush(&mut self) -> KcpResult<(bool, Vec<(u32, usize)>)> {
+    pub fn flush(&mut self) -> KcpResult<((bool, u32), Vec<(u32, usize)>)> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
             return Err(Error::NeedUpdate);
@@ -983,6 +982,7 @@ impl<Output: Write> Kcp<Output> {
         let rtomin = if !self.nodelay { self.rx_rto >> 3 } else { 0 };
 
         let mut lost = false;
+        let mut sn_of_lost = 0;
         let mut change = 0;
 
         for snd_segment in &mut self.snd_buf {
@@ -1005,6 +1005,7 @@ impl<Output: Write> Kcp<Output> {
                 }
                 snd_segment.resendts = self.current + snd_segment.rto;
                 lost = true;
+                sn_of_lost = snd_segment.sn;
             } else if snd_segment.fastack >= resent {
                 if snd_segment.xmit <= self.fastlimit || self.fastlimit <= 0 {
                     need_send = true;
@@ -1068,13 +1069,13 @@ impl<Output: Write> Kcp<Output> {
             }
         }
             
-        Ok((lost || change > 0, new_packets))
+        Ok((((lost || change > 0), sn_of_lost), new_packets))
     }
 
     /// Update state every 10ms ~ 100ms.
     ///
     /// Or you can ask `check` when to call this again.
-    pub fn update(&mut self, current: u32) -> KcpResult<(bool, Vec<(u32, usize)>)> {
+    pub fn update(&mut self, current: u32) -> KcpResult<((bool, u32), Vec<(u32, usize)>)> {
         self.current = current;
 
         if !self.updated {
@@ -1097,7 +1098,7 @@ impl<Output: Write> Kcp<Output> {
             return self.flush();
         }
 
-        Ok((false, Vec::new()))
+        Ok(((false, 0), Vec::new()))
     }
 
     /// Determine when you should call `update`.

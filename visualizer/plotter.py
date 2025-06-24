@@ -8,16 +8,13 @@ def plot_scream_performance_with_loss():
     Reads SCReAM performance data and plots it, highlighting packet loss events.
     """
     try:
-        # Laden der Daten aus der CSV-Datei
         df = pd.read_csv('kcp_scream_testspace/scream_log.csv')
         if df.empty:
             print("Error: scream_log.csv is empty.")
             return
 
-        # Konvertieren des Zeitstempels für die Darstellung
         df['timestamp'] = pd.to_datetime(df['timestamp_ms'], unit='ms')
 
-        # Filtern der Zeitpunkte, an denen ein Paketverlust auftrat
         loss_events = df[df['packet_loss'] == 1]
 
         # Erstellen der Graphen
@@ -33,14 +30,12 @@ def plot_scream_performance_with_loss():
 
         # Graph 2: Ziel-Bitrate
         ax2.plot(df['timestamp'], df['bitrate_kbps'], label='Target Bitrate (kbps)', color='green')
-        # --- NEU: Gelbe Punkte für Paketverluste hinzufügen ---
         ax2.scatter(loss_events['timestamp'], loss_events['bitrate_kbps'], 
                     color='gold', 
                     edgecolor='black',
-                    s=100, # Größe der Punkte
-                    zorder=5, # Stellt sicher, dass die Punkte über der Linie gezeichnet werden
+                    s=100, 
+                    zorder=5, 
                     label='Packet Loss Event')
-        # --- ENDE ---
         ax2.set_ylabel('Bitrate (kbps)')
         ax2.set_title('Target Bitrate')
         ax2.grid(True)

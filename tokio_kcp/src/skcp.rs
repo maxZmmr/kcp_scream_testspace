@@ -84,6 +84,7 @@ pub struct KcpSocket {
     pending_receiver: Option<Waker>,
     closed: bool,
     allow_recv_empty_packet: bool,
+    last_scream_update_time: Instant,
 }
 
 impl KcpSocket {
@@ -121,6 +122,7 @@ impl KcpSocket {
             pending_receiver: None,
             closed: false,
             allow_recv_empty_packet: c.allow_recv_empty_packet,
+            last_scream_update_time: Instant::now(),
         })
     }
 
@@ -286,12 +288,17 @@ impl KcpSocket {
         let now = now_millis();
         let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
 
-        if packet_loss_detected {
-            self.scream.on_packet_loss();
+        if packet_loss_detected.0 {
+            self.scream.on_packet_loss(packet_loss_detected.1);
         }
 
         for (seq_number, size) in new_packets {
             self.scream.on_packet_sent(seq_number, size);
+        }
+
+        if self.last_scream_update_time.elapsed() >= Duration::from_millis(150) {
+            self.last_scream_update_time = Instant::now();
+            todo!("add that the right mehod gets called");
         }
 
         let new_cwnd_in_bytes = self.scream.get_cwnd();
@@ -303,11 +310,8 @@ impl KcpSocket {
 
 
 
-
         let next = self.kcp.check(now);
-
         self.try_wake_pending_waker();
-
         Ok(Instant::now() + Duration::from_millis(next as u64))
     }
 
