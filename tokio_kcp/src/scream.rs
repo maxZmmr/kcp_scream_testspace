@@ -248,7 +248,7 @@ impl ScreamCongestionControl {
         }
     }
 
-    fn increase_window(&mut self, now: Instant, is_loss: bool, is_ce: bool) {
+    fn increase_window(&mut self) {
         // Delay factor for multiplicative reference window increase
         // after congestion
 
@@ -310,7 +310,7 @@ impl ScreamCongestionControl {
 
     pub fn update_ref_window(&mut self, acked_sns: &[u32], is_loss: bool, is_ce: bool) {
         let now = Instant::now();
-        self.increase_window(now, is_loss, is_ce);
+        self.increase_window();
         self.decrease_window(now, is_loss, is_ce);
         todo!("update bytes_newly_acked_ce and bytes_newly_acked ");
         
@@ -347,6 +347,7 @@ impl ScreamCongestionControl {
         self.packets_in_flight.insert(seq_number, info);
     }
     
+    // everytime a packet gets ACK'ed the congestion_window gets increased and decreased (only after one s_rtt)
     pub fn on_ack(&mut self, seq_number: u32) {
         if let Some(info) = self.packets_in_flight.remove(&seq_number) {
 
@@ -362,6 +363,11 @@ impl ScreamCongestionControl {
                 self.base_rtt_update_time = Instant::now();
                 self.base_rtt = self.min_rtt_in_window;       
             }
+
+            // update the ref_wnd
+            self.update_ref_window(acked_sns, is_loss, is_ce);
+
+
             self.min_rtt_in_window = min(self.min_rtt_in_window, latest_rtt);
             let queuing_delay = self.rtt.saturating_sub(self.base_rtt);
 
@@ -382,7 +388,7 @@ impl ScreamCongestionControl {
         let rtt_sec = self.rtt.as_secs_f64();
         let bytes_per_sec = bitrate_bps / 8.0;
 
-        let cwnd = (bytes_per_sec as f64 * rtt_sec) as u32;
+        let cwnd = self.ref_wnd as u32;
 
 
         // output to csv file
