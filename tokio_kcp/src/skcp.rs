@@ -1,69 +1,74 @@
 use std::{
-    io::{self, ErrorKind, Write},
-    net::SocketAddr,
-    sync::Arc,
-    task::{Context, Poll, Waker},
-    time::{Duration, Instant},
+    error, io::{self, ErrorKind, Write}, net::SocketAddr, sync::Arc, task::{Context, Poll, Waker}, time::{Duration, Instant}
 };
 
 use futures_util::future;
 use kcp::{Error as KcpError, Kcp, KcpResult};
-use log::{error, trace};
-use tokio::{net::UdpSocket, sync::mpsc};
-
+use log::{trace, error};
+use tokio::{
+    net::UdpSocket,
+    sync::{
+        mpsc,
+        watch,
+    }
+};
 use crate::{
-    scream::{ScreamCongestionControl}, utils::now_millis, KcpConfig
+    scream::ScreamCongestionControl,
+    utils::now_millis,
+    KcpConfig,
+    pacer::PacketPacer,
 };
 
 
 /// Writer for sending packets to the underlying UdpSocket
-struct UdpOutput {
-    socket: Arc<UdpSocket>,
-    target_addr: SocketAddr,
-    delay_tx: mpsc::UnboundedSender<Vec<u8>>,
+// struct UdpOutput {
+//     socket: Arc<UdpSocket>,
+//     target_addr: SocketAddr,
+//     delay_tx: mpsc::UnboundedSender<Vec<u8>>,
+// }
+
+struct PacerOutput {
+    pacer: PacketPacer,
 }
 
-impl UdpOutput {
-    /// Create a new Writer for writing packets to UdpSocket
-    pub fn new(socket: Arc<UdpSocket>, target_addr: SocketAddr) -> UdpOutput {
-        let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+// impl UdpOutput {
+//     /// Create a new Writer for writing packets to UdpSocket
+//     pub fn new(socket: Arc<UdpSocket>, target_addr: SocketAddr) -> UdpOutput {
+//         let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        {
-            let socket = socket.clone();
-            tokio::spawn(async move {
-                while let Some(buf) = delay_rx.recv().await {
-                    if let Err(err) = socket.send_to(&buf, target_addr).await {
-                        error!("[SEND] UDP delayed send failed, error: {}", err);
-                    }
-                }
-            });
-        }
+//         {
+//             let socket = socket.clone();
+//             tokio::spawn(async move {
+//                 while let Some(buf) = delay_rx.recv().await {
+//                     if let Err(err) = socket.send_to(&buf, target_addr).await {
+//                         error!("[SEND] UDP delayed send failed, error: {}", err);
+//                     }
+//                 }
+//             });
+//         }
 
-        UdpOutput {
-            socket,
-            target_addr,
-            delay_tx,
-        }
-    }
-}
+//         UdpOutput {
+//             socket,
+//             target_addr,
+//             delay_tx,
+//         }
+//     }
+// }
 
-impl Write for UdpOutput {
+impl Write for PacerOutput {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.socket.try_send_to(buf, self.target_addr) {
-            Ok(n) => Ok(n),
-            Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
-                // send return EAGAIN
-                // ignored as packet was lost in transmission
-                trace!("[SEND] UDP send EAGAIN, packet.size: {} bytes, delayed send", buf.len());
-
-                self.delay_tx.send(buf.to_owned()).expect("channel closed unexpectedly");
-
-                Ok(buf.len())
-            }
-            Err(err) => Err(err),
+        match self.pacer.packet_tx.try_send(buf.to_vec()) {
+            Ok(()) => Ok(buf.len()),
+            Err(e) => {
+                if let tokio::sync::mpsc::error::TrySendError::Closed(_) = e {
+                    eprint!("Pacer channel is closed");
+                    Err(io::Error::new(ErrorKind::BrokenPipe, "Pacer channel is closed"))
+                } else {
+                    Ok(buf.len())
+                }
+            },
         }
     }
-
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -71,8 +76,9 @@ impl Write for UdpOutput {
 
 #[derive(Debug)]
 pub struct KcpSocket {
-    kcp: Kcp<UdpOutput>,
+    kcp: Kcp<PacerOutput>,
     scream: ScreamCongestionControl,
+    pacing_rate_tx: watch::Sender<f32>,
     last_update: Instant,
     socket: Arc<UdpSocket>,
     flush_write: bool,
@@ -92,7 +98,10 @@ impl KcpSocket {
         target_addr: SocketAddr,
         stream: bool,
     ) -> KcpResult<KcpSocket> {
-        let output = UdpOutput::new(socket.clone(), target_addr);
+        let (pacing_rate_tx, pacing_rate_rx) = watch::channel(1_000_000.0);
+        let pacer = PacketPacer::new(socket.clone(), target_addr, pacing_rate_rx);
+        let output = PacerOutput { pacer };
+        
         let mut kcp = if stream {
             Kcp::new_stream(conv, output)
         } else {
@@ -110,6 +119,7 @@ impl KcpSocket {
         Ok(KcpSocket {
             kcp,
             scream: ScreamCongestionControl::new(),
+            pacing_rate_tx,
             last_update: Instant::now(),
             socket,
             flush_write: c.flush_write,
@@ -125,12 +135,13 @@ impl KcpSocket {
     /// Call every time you got data from transmission
     pub fn input(&mut self, buf: &[u8]) -> KcpResult<bool> {
         let acked_sns = self.kcp.input(buf)?;
+        let now = Instant::now();
 
-        for seq_number in acked_sns {
-            self.scream.on_ack(seq_number.0, seq_number.1);
+        for (seq_number, _size) in acked_sns {
+            self.scream.on_ack(seq_number, now);
         }
        
-        self.last_update = Instant::now();
+        self.last_update = now;
 
         if self.flush_ack_input {
             self.kcp.flush_ack()?;
@@ -285,17 +296,16 @@ impl KcpSocket {
         let now = now_millis();
         let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
 
-        if packet_loss_detected.0 {
-            self.scream.on_packet_loss(packet_loss_detected.1);
+        if packet_loss_detected.0 { // bool if something was lost
+            self.scream.on_packet_loss(packet_loss_detected.1); // sequence number of lost packet
         }
 
         for (seq_number, size) in new_packets {
             self.scream.on_packet_sent(seq_number, size);
         }
 
-        let s_rtt_duration = Duration::from_secs_f32(self.scream.get_s_rtt().max(0.01));
-
         // Prüfen, ob seit dem letzten periodischen Update eine RTT vergangen ist
+        let s_rtt_duration = Duration::from_secs_f32(self.scream.get_s_rtt().max(0.02)); 
         if self.scream.get_last_periodic_update_time().elapsed() >= s_rtt_duration {
             self.scream.on_rtt();
         }
@@ -308,6 +318,12 @@ impl KcpSocket {
         }
 
         self.scream.log_data();
+
+        let new_pacing_rate = self.scream.get_pacing_rate();
+        if self.pacing_rate_tx.send(new_pacing_rate).is_err() {
+            error!(" Pacer task seems to have died.");
+        }
+
 
         let next = self.kcp.check(now);
         self.try_wake_pending_waker();
