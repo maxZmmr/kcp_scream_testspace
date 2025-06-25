@@ -4,20 +4,15 @@ use std::io::Write;
 use std::time::SystemTime;
 
 const BASE_RTT_WINDOW: Duration = Duration::from_secs(10);
-const QDELAY_TARGET_LO: f32 = 0.06; // 0.1 seconds
-const QDELAY_TARGET_HI: f32 = 0.4;
-const MIN_REF_WND: u32 = 2000;      // smalles window size, typically 2 * MSS
+const QDELAY_TARGET_LO: f32 = 0.06; 
+const MIN_REF_WND: u32 = 2000;     
 const BYTES_IN_FLIGHT_HEAD_ROOM: f32 = 1.5;
 const BETA_LOSS: f32 = 0.7;
 const BETA_ECN: f32 = 0.8;
 const MSS: u64 = 1000;
-const REF_WND_OVERHEAD: f32 = 1.5;
 const POST_CONGESTION_DELAY_RTT: f32 = 4.0;
 const MUL_INCREASE_FACTOR: f32 = 0.02;
 const PACKET_PACING_HEADROOM: f32 = 1.25;
-const IS_L4S: bool = false;
-const VIRTUAL_RTT: f32 = 0.025;
-
 
 
 #[derive(Debug)]
@@ -51,9 +46,6 @@ pub struct ScreamCongestionControl {
     last_congestion_detected_time: Instant,
     last_ref_wnd_i_update_time: Instant,
     last_periodic_update_time: Instant,
-    l4s_alpha: f32,                                      
-    is_l4s_active: bool,                      
-    ref_wnd_ratio: f32,
     
     // packet-tracking
     packets_in_flight: HashMap<u32, PacketInfo>,
@@ -69,14 +61,14 @@ impl ScreamCongestionControl {
         Self {
             s_rtt: 0.0,
             rtt_var: 0.0,
-            base_rtt: Duration::from_secs(10), // Hoher Startwert
+            base_rtt: Duration::from_secs(10), 
             min_rtt_in_window: Duration::from_secs(10),
             base_rtt_update_time: now,
             qdelay: Duration::ZERO,
             qdelay_avg: 0.0,
             qdelay_target: QDELAY_TARGET_LO,
 
-            ref_wnd: 2.0 * MSS as f32, // Start mit 2 * MSS
+            ref_wnd: 2.0 * MSS as f32, 
             ref_wnd_i: 2.0 * MSS as f32,
             bytes_in_flight: 0,
             max_bytes_in_flight: 0,
@@ -88,16 +80,11 @@ impl ScreamCongestionControl {
             last_congestion_detected_time: now,
             last_ref_wnd_i_update_time: now,
             last_periodic_update_time: now,
-            l4s_alpha: 0.1,                                      
-            is_l4s_active: false,                      
-            ref_wnd_ratio: 0.0, 
 
             packets_in_flight: HashMap::new(),
 
             first_rtt_measurement: true,
-            loss_for_log: false,       
-
-                        
+            loss_for_log: false,                
         }
     }
 
@@ -243,7 +230,6 @@ impl ScreamCongestionControl {
     
 
     pub fn log_data(&mut self) {
-        // output to csv file
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -252,12 +238,17 @@ impl ScreamCongestionControl {
         self.loss_for_log = false;
 
         let log_line = format!(
-            "{},{},{},{}, {}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             timestamp,
-            self.rtt.as_millis(), 
+            (self.s_rtt * 1000.0) as u128, 
+            (self.base_rtt.as_secs_f32() * 1000.0) as u128, 
+            (self.qdelay.as_secs_f32() * 1000.0) as u128, 
+            (self.qdelay_avg * 1000.0) as u128,
             self.get_target_bitrate() / 1000.0, 
-            self.ref_wnd,
-            packet_loss_indicator, 
+            self.ref_wnd, 
+            self.bytes_in_flight,
+            self.max_bytes_in_flight,
+            packet_loss_indicator,
         );
 
         if let Ok(mut file) = OpenOptions::new()
@@ -266,16 +257,11 @@ impl ScreamCongestionControl {
             .open("scream_log.csv")
         {
             if file.metadata().unwrap().len() == 0 {
-                let _ = file.write(b"timestamp_ms,rtt_ms,bitrate_kbps,cwnd_bytes,packet_loss\n");
-            }   
+                let _ = file.write_all(b"timestamp_ms,s_rtt_ms,base_rtt_ms,qdelay_ms,qdelay_avg_ms,bitrate_kbps,cwnd_bytes,bytes_in_flight,max_bytes_in_flight,packet_loss\n");
+            }
             let _ = file.write_all(log_line.as_bytes());
         }
-
-
-        // println!("[SCReAM] RTT: {:?}, Target Bitrate: {} kbps, Calculated CWND: {}", self.rtt, self.target_bitrate / 1000, cwnd);
     }
-
-
 
 
 
