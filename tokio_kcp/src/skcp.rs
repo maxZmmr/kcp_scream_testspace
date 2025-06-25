@@ -12,9 +12,7 @@ use log::{error, trace};
 use tokio::{net::UdpSocket, sync::mpsc};
 
 use crate::{
-    utils::now_millis,
-    KcpConfig,
-    scream::ScreamCongestionControl,
+    scream::{ScreamCongestionControl}, utils::now_millis, KcpConfig
 };
 
 
@@ -84,7 +82,6 @@ pub struct KcpSocket {
     pending_receiver: Option<Waker>,
     closed: bool,
     allow_recv_empty_packet: bool,
-    last_scream_update_time: Instant,
 }
 
 impl KcpSocket {
@@ -122,7 +119,6 @@ impl KcpSocket {
             pending_receiver: None,
             closed: false,
             allow_recv_empty_packet: c.allow_recv_empty_packet,
-            last_scream_update_time: Instant::now(),
         })
     }
 
@@ -131,7 +127,7 @@ impl KcpSocket {
         let acked_sns = self.kcp.input(buf)?;
 
         for seq_number in acked_sns {
-            self.scream.on_ack(seq_number);
+            self.scream.on_ack(seq_number.0, seq_number.1);
         }
        
         self.last_update = Instant::now();
@@ -284,6 +280,7 @@ impl KcpSocket {
         waked
     }
 
+
     pub fn update(&mut self) -> KcpResult<Instant> {
         let now = now_millis();
         let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
@@ -296,19 +293,21 @@ impl KcpSocket {
             self.scream.on_packet_sent(seq_number, size);
         }
 
-        if self.last_scream_update_time.elapsed() >= Duration::from_millis(150) {
-            self.last_scream_update_time = Instant::now();
-            todo!("add that the right mehod gets called");
+        let s_rtt_duration = Duration::from_secs_f32(self.scream.get_s_rtt().max(0.01));
+
+        // Prüfen, ob seit dem letzten periodischen Update eine RTT vergangen ist
+        if self.scream.get_last_periodic_update_time().elapsed() >= s_rtt_duration {
+            self.scream.on_rtt();
         }
 
-        let new_cwnd_in_bytes = self.scream.get_cwnd();
         let mss = self.kcp.mss() as u32;
         if mss > 0 {
-            let new_snd_window = (new_cwnd_in_bytes / mss).max(2) as u16;
+            let ref_wnd = self.scream.get_ref_wnd(); 
+            let new_snd_window = (ref_wnd / mss as f32).max(2.0) as u16;
             self.kcp.set_wndsize(new_snd_window, self.kcp.rcv_wnd());
         }
 
-
+        self.scream.log_data();
 
         let next = self.kcp.check(now);
         self.try_wake_pending_waker();

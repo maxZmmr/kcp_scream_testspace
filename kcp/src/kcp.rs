@@ -644,7 +644,7 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Call this when you received a packet from raw connection
-    pub fn input(&mut self, buf: &[u8]) -> KcpResult<Vec<u32>> {
+    pub fn input(&mut self, buf: &[u8]) -> KcpResult<Vec<(u32, usize)>> {
         let input_size = buf.len();
         let mut acked_sns = Vec::new();
         trace!("[RI] {} bytes", buf.len());
@@ -699,7 +699,7 @@ impl<Output: Write> Kcp<Output> {
 
             match cmd {
                 KCP_CMD_ACK => {
-                    acked_sns.push(sn);
+                    acked_sns.push((sn, len));
                 },
                 KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS => {}
                 _ => {
