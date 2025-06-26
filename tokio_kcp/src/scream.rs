@@ -191,6 +191,7 @@ impl ScreamCongestionControl {
 
             if self.first_rtt_measurement {
                 self.s_rtt = latest_rtt.as_secs_f32();
+                self.base_rtt = latest_rtt; // set first base_rtt for first 10 seconds
                 self.rtt_var = self.s_rtt / 2.0;
                 self.first_rtt_measurement = false;
             } else {
@@ -209,6 +210,9 @@ impl ScreamCongestionControl {
                 self.base_rtt_update_time = Instant::now();
             }
             self.qdelay = latest_rtt.saturating_sub(self.base_rtt);
+
+
+            println!("base_rtt: {:?}, and latest_rtt: {:?}", self.base_rtt, latest_rtt);
 
             let qdelay_sample = self.qdelay.as_secs_f32();
             let q_alpha = 0.1;

@@ -87,7 +87,7 @@ async fn run_client() -> std::io::Result<()> {
     let mut total_sent_bytes: u64 = 0;
     let mut total_received_bytes: u64 = 0;
     let start_time = Instant::now();
-    let test_duration = Duration::from_secs(15);
+    let test_duration = Duration::from_secs(30);
 
     println!("Client: Sende und empfange Daten für {} Sekunden...", test_duration.as_secs());
 
