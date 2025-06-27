@@ -50,10 +50,17 @@ async fn run_server() -> std::io::Result<()> {
             }
             Ok(n) => {
                 total_received_bytes += n;
+
+                // ### ANPASSUNG HIER ###
+                // Das Zurücksenden der Daten (Echo) wird nicht mehr benötigt und wurde auskommentiert.
+                // KCP sendet die ACKs für die empfangenen Pakete automatisch.
+                /*
                 if let Err(e) = stream.send(&buf[..n]).await {
                     eprintln!("Server Sende-Fehler: {}", e);
                     break;
                 }
+                */
+
                 if last_stat_time.elapsed() >= Duration::from_secs(2) {
                     let rate_kbps = (total_received_bytes as f64 * 8.0) / (last_stat_time.elapsed().as_secs_f64() * 1000.0);
                     println!("[Server] Empfangsdurchsatz der letzten 2s: {:.2} kbps", rate_kbps);
@@ -83,52 +90,41 @@ async fn run_client() -> std::io::Result<()> {
     println!("Client: Verbunden.");
 
     let data_to_send = vec![1u8; 4096];
-    let mut recv_buf = vec![0u8; 8192];
+    // recv_buf und total_received_bytes werden nicht mehr benötigt
     let mut total_sent_bytes: u64 = 0;
-    let mut total_received_bytes: u64 = 0;
     let start_time = Instant::now();
     let test_duration = Duration::from_secs(30);
 
-    println!("Client: Sende und empfange Daten für {} Sekunden...", test_duration.as_secs());
+    println!("Client: Sende Daten für {} Sekunden...", test_duration.as_secs());
 
     while start_time.elapsed() < test_duration {
-        // First, try to send data
+        // Daten senden
         match stream.send(&data_to_send).await {
             Ok(n) => {
                 total_sent_bytes += n as u64;
             }
             Err(e) => {
                 eprintln!("Client Sende-Fehler: {}", e);
-                tokio::time::sleep(Duration::from_secs(1)).await;
                 break;
             }
         }
 
-        // Then, try to receive data
-        match stream.recv(&mut recv_buf).await {
-            Ok(0) => {
-                println!("Client: Server hat die Verbindung geschlossen.");
-                break;
-            }
-            Ok(n) => {
-                total_received_bytes += n as u64;
-            }
-            Err(e) => {
-                eprintln!("Client Empfangs-Fehler: {}", e);
-                break;
-            }
-        }
+        // ### ANPASSUNG HIER ###
+        // Wir entfernen die recv-Logik komplett. Stattdessen fügen wir eine kurze,
+        // asynchrone Pause ein. Dies gibt dem Tokio-Scheduler die Möglichkeit,
+        // die Hintergrund-Tasks (die ACKs empfangen) auszuführen.
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 
     let elapsed_secs = start_time.elapsed().as_secs_f64();
     let send_throughput_kbps = (total_sent_bytes as f64 * 8.0 / 1000.0) / elapsed_secs;
-    let recv_throughput_kbps = (total_received_bytes as f64 * 8.0 / 1000.0) / elapsed_secs;
-
+    
     println!("\n----------------------------------------");
     println!("Client: Test beendet.");
     println!("Gesamtdauer: {:.2} Sekunden", elapsed_secs);
     println!("Gesendet: {} bytes | Avg. Rate: {:.2} kbps", total_sent_bytes, send_throughput_kbps);
-    println!("Empfangen: {} bytes | Avg. Rate: {:.2} kbps", total_received_bytes, recv_throughput_kbps);
+    // Die Empfangsanzeige wird nicht mehr benötigt
+    // println!("Empfangen: {} bytes | Avg. Rate: {:.2} kbps", total_received_bytes, recv_throughput_kbps);
     println!("----------------------------------------");
 
     stream.shutdown().await?;

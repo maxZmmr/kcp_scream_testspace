@@ -297,7 +297,9 @@ impl KcpSocket {
         let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
 
         if packet_loss_detected.0 { // bool if something was lost
-            self.scream.on_packet_loss(packet_loss_detected.1); // sequence number of lost packet
+            for sn in packet_loss_detected.1 { // sequence number(s) of lost packet(s)
+                self.scream.on_packet_loss(sn); 
+            }
         }
 
         for (seq_number, size) in new_packets {

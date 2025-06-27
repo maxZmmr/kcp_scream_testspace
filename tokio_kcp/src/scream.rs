@@ -212,7 +212,7 @@ impl ScreamCongestionControl {
             self.qdelay = latest_rtt.saturating_sub(self.base_rtt);
 
 
-            println!("base_rtt: {:?}, and latest_rtt: {:?}", self.base_rtt, latest_rtt);
+            // println!("base_rtt: {:?}, and latest_rtt: {:?}", self.base_rtt, latest_rtt);
 
             let qdelay_sample = self.qdelay.as_secs_f32();
             let q_alpha = 0.1;
