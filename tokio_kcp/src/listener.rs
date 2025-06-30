@@ -68,6 +68,8 @@ impl KcpListener {
                             Ok((n, peer_addr)) => {
                                 let packet = &mut packet_buffer[..n];
 
+                                println!("{:?}", (&packet[..4]).get_u32_le() == scream::SCREAM_FEEDBACK_HEADER);
+                                
                                 // check if it is SCReAMv2 header
                                 if n > 4 && (&packet[..4]).get_u32_le() == scream::SCREAM_FEEDBACK_HEADER {
                                     if let Some(session) = sessions.get(&peer_addr) {

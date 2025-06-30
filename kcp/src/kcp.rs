@@ -703,7 +703,7 @@ impl<Output: Write> Kcp<Output> {
                 KCP_CMD_ACK => {
                     acked_sns.push((sn, len));
                 },
-                KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS | KCP_CMD_SCRM_FEEDBACK => {}
+                KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS => {}
                 _ => {
                     debug!("input cmd={} unrecognized", cmd);
                     return Err(Error::UnsupportedCmd(cmd));
@@ -754,9 +754,8 @@ impl<Output: Write> Kcp<Output> {
                     trace!("input psh: sn={} ts={}", sn, ts);
 
                     if timediff(sn, self.rcv_nxt + self.rcv_wnd as u32) < 0 {
-                        if !self.external_cc {
-                            self.ack_push(sn, ts);
-                        }
+                        self.ack_push(sn, ts);
+                        
                         if timediff(sn, self.rcv_nxt) >= 0 {
                             received_push_sns.push((sn,len));
                         
@@ -1239,10 +1238,6 @@ impl<Output: Write> Kcp<Output> {
         if rcvwnd > 0 {
             self.rcv_wnd = cmp::max(rcvwnd, KCP_WND_RCV) as u16;
         }
-    }
-
-    pub fn get_kcp_scream_feedback(&self) -> u8 {
-        KCP_CMD_SCRM_FEEDBACK
     }
 
     /// `snd_wnd` Send window

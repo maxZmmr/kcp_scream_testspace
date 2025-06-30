@@ -11,6 +11,7 @@ use std::{
 };
 
 use byte_string::ByteStr;
+use bytes::Buf;
 use kcp::KcpResult;
 use log::{error, trace};
 use spin::Mutex as SpinMutex;
@@ -108,7 +109,11 @@ impl KcpSession {
                                 Ok(n) => {
                                     let input_buffer = &input_buffer[..n];
 
-                                    if input_buffer.len() < kcp::KCP_OVERHEAD {
+                                    if n > 4 && (&input_buffer[..4]).get_u32_le() == crate::scream::SCREAM_FEEDBACK_HEADER {
+                                        let mut socket = session.socket.lock();
+                                        socket.scream.on_feedback(&input_buffer[4..], std::time::Instant::now());
+                                        socket.try_wake_pending_waker();
+                                    } else if input_buffer.len() < kcp::KCP_OVERHEAD {
                                         error!("packet too short, received {} bytes, but at least {} bytes",
                                                input_buffer.len(),
                                                kcp::KCP_OVERHEAD);
