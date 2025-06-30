@@ -1,9 +1,11 @@
 use std::{
     error, io::{self, ErrorKind, Write}, net::SocketAddr, sync::Arc, task::{Context, Poll, Waker}, time::{Duration, Instant}
 };
+use std::convert::TryInto;
 
+use bytes::BufMut;
 use futures_util::future;
-use kcp::{Error as KcpError, Kcp, KcpResult};
+use kcp::{Error as KcpError, Kcp, KcpResult, KCP_OVERHEAD};
 use log::{trace, error};
 use tokio::{
     net::UdpSocket,
@@ -134,13 +136,42 @@ impl KcpSocket {
 
     /// Call every time you got data from transmission
     pub fn input(&mut self, buf: &[u8]) -> KcpResult<bool> {
-        let acked_sns = self.kcp.input(buf)?;
         let now = Instant::now();
 
+        if buf.len() >= KCP_OVERHEAD {
+            let cmd = buf[4];
+            if cmd == self.kcp.get_kcp_scream_feedback() {
+                let una = self.kcp.get_una();
+                self.kcp.parse_una(una);
+
+
+
+                self.scream.on_feedback(&buf[KCP_OVERHEAD..], now);
+
+                let feedback_payload = &buf[KCP_OVERHEAD..];
+                for chunk in feedback_payload.chunks_exact(12) {
+                    let sn = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
+                    self.kcp.parse_ack(sn);
+                }
+                self.kcp.shrink_buf();
+
+
+
+
+                self.try_wake_pending_waker();
+                return Ok(true);
+            }
+        }
+
+        let (acked_sns, received_push_sns) = self.kcp.input(buf)?;
         for (seq_number, _size) in acked_sns {
             self.scream.on_ack(seq_number, now);
         }
-       
+        
+        for (seq_number, size) in received_push_sns {
+            self.scream.on_packet_received(seq_number, size, now);
+        }
+
         self.last_update = now;
 
         if self.flush_ack_input {
@@ -296,6 +327,8 @@ impl KcpSocket {
         let now = now_millis();
         let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
 
+       
+
         if packet_loss_detected.0 { // bool if something was lost
             for sn in packet_loss_detected.1 { // sequence number(s) of lost packet(s)
                 self.scream.on_packet_loss(sn); 
@@ -306,6 +339,27 @@ impl KcpSocket {
             self.scream.on_packet_sent(seq_number, size);
         }
 
+        if self.scream.get_last_feedback_time().elapsed() >= Duration::from_millis(10) {
+            if let Some(feedback_data) = self.scream.create_feedback_packet() {
+                let mut raw_packet = Vec::with_capacity(KCP_OVERHEAD + feedback_data.len());
+
+                raw_packet.put_u32_le(self.kcp.conv()); // conv
+                raw_packet.put_u8(self.kcp.get_kcp_scream_feedback()); // cmd
+                raw_packet.put_u8(0); // frg
+                raw_packet.put_u16_le(self.kcp.wnd_unused()); // wnd
+                raw_packet.put_u32_le(0); // ts
+                raw_packet.put_u32_le(0); // sn
+                raw_packet.put_u32_le(self.kcp.get_rcv_nxt()); // una
+                raw_packet.put_u32_le(feedback_data.len() as u32); // len
+                raw_packet.extend_from_slice(&feedback_data);
+
+                if let Err(e) = self.kcp.output_raw(&raw_packet) {
+                    error!("Failed to send raw SCReAM feedback packet: {}", e);
+                }
+            }
+        }
+
+
         // Prüfen, ob seit dem letzten periodischen Update eine RTT vergangen ist
         let s_rtt_duration = Duration::from_secs_f32(self.scream.get_s_rtt().max(0.02)); 
         if self.scream.get_last_periodic_update_time().elapsed() >= s_rtt_duration {
@@ -314,7 +368,7 @@ impl KcpSocket {
 
         let mss = self.kcp.mss() as u32;
         if mss > 0 {
-            let ref_wnd = self.scream.get_ref_wnd(); 
+            let ref_wnd = self.scream.get_ref_wnd();  
             let new_snd_window = (ref_wnd / mss as f32).max(2.0) as u16;
             self.kcp.set_wndsize(new_snd_window, self.kcp.rcv_wnd());
         }
@@ -331,6 +385,7 @@ impl KcpSocket {
         self.try_wake_pending_waker();
         Ok(Instant::now() + Duration::from_millis(next as u64))
     }
+
 
     pub fn close(&mut self) {
         self.closed = true;

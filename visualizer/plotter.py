@@ -7,7 +7,7 @@ import os
 
 def plot_scream_performance():
     try:
-        df = pd.read_csv('scream_log.csv')
+        df = pd.read_csv('tokio_kcp/scream_log.csv')
         if df.empty:
             print("Fehler: scream_log.csv ist leer.")
             return
@@ -59,7 +59,7 @@ def plot_scream_performance():
         plt.tight_layout(rect=[0, 0, 1, 0.96])
         plt.savefig('scream_performance_analysis.png')
 
-        os.remove('scream_log.csv')
+        os.remove('tokio_kcp/scream_log.csv')
         
         print("Grafik wurde erfolgreich als 'scream_performance_analysis.png' gespeichert.")
 

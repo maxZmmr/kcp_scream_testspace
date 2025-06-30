@@ -20,6 +20,7 @@ const KCP_CMD_PUSH: u8 = 81; // cmd: push data
 const KCP_CMD_ACK: u8 = 82; // cmd: ack
 const KCP_CMD_WASK: u8 = 83; // cmd: window probe (ask)
 const KCP_CMD_WINS: u8 = 84; // cmd: window size (tell)
+const KCP_CMD_SCRM_FEEDBACK: u8 = 85;  // cmd: SCReAMv2 feedback
 
 const KCP_ASK_SEND: u32 = 1; // need to send IKCP_CMD_WASK
 const KCP_ASK_TELL: u32 = 2; // need to send IKCP_CMD_WINS
@@ -529,14 +530,14 @@ impl<Output: Write> Kcp<Output> {
     }
 
     #[inline]
-    fn shrink_buf(&mut self) {
+    pub fn shrink_buf(&mut self) {
         self.snd_una = match self.snd_buf.front() {
             Some(seg) => seg.sn,
             None => self.snd_nxt,
         };
     }
 
-    fn parse_ack(&mut self, sn: u32) {
+    pub fn parse_ack(&mut self, sn: u32) {
         if timediff(sn, self.snd_una) < 0 || timediff(sn, self.snd_nxt) >= 0 {
             return;
         }
@@ -554,7 +555,7 @@ impl<Output: Write> Kcp<Output> {
         }
     }
 
-    fn parse_una(&mut self, una: u32) {
+    pub fn parse_una(&mut self, una: u32) {
         while let Some(seg) = self.snd_buf.front() {
             if timediff(una, seg.sn) > 0 {
                 self.snd_buf.pop_front();
@@ -644,9 +645,10 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Call this when you received a packet from raw connection
-    pub fn input(&mut self, buf: &[u8]) -> KcpResult<Vec<(u32, usize)>> {
+    pub fn input(&mut self, buf: &[u8]) -> KcpResult<(Vec<(u32, usize)>, Vec<(u32, usize)>)> {
         let input_size = buf.len();
         let mut acked_sns = Vec::new();
+        let mut received_push_sns = Vec::new();
         trace!("[RI] {} bytes", buf.len());
 
         if buf.len() < KCP_OVERHEAD as usize {
@@ -701,7 +703,7 @@ impl<Output: Write> Kcp<Output> {
                 KCP_CMD_ACK => {
                     acked_sns.push((sn, len));
                 },
-                KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS => {}
+                KCP_CMD_PUSH | KCP_CMD_WASK | KCP_CMD_WINS | KCP_CMD_SCRM_FEEDBACK => {}
                 _ => {
                     debug!("input cmd={} unrecognized", cmd);
                     return Err(Error::UnsupportedCmd(cmd));
@@ -752,8 +754,12 @@ impl<Output: Write> Kcp<Output> {
                     trace!("input psh: sn={} ts={}", sn, ts);
 
                     if timediff(sn, self.rcv_nxt + self.rcv_wnd as u32) < 0 {
-                        self.ack_push(sn, ts);
+                        if !self.external_cc {
+                            self.ack_push(sn, ts);
+                        }
                         if timediff(sn, self.rcv_nxt) >= 0 {
+                            received_push_sns.push((sn,len));
+                        
                             let mut sbuf = BytesMut::with_capacity(len as usize);
                             unsafe {
                                 sbuf.set_len(len as usize);
@@ -822,11 +828,11 @@ impl<Output: Write> Kcp<Output> {
             }
         }
 
-        Ok(acked_sns)
+        Ok((acked_sns, received_push_sns))
 
     }
 
-    fn wnd_unused(&self) -> u16 {
+    pub fn wnd_unused(&self) -> u16 {
         if self.rcv_queue.len() < self.rcv_wnd as usize {
             self.rcv_wnd - self.rcv_queue.len() as u16
         } else {
@@ -1067,7 +1073,8 @@ impl<Output: Write> Kcp<Output> {
                 self.cwnd = 1;
                 self.incr = self.mss;
             }
-        }
+        } 
+
             
         Ok((((lost || change > 0), sns_of_lost), new_packets))
     }
@@ -1095,7 +1102,8 @@ impl<Output: Write> Kcp<Output> {
             if timediff(self.current, self.ts_flush) >= 0 {
                 self.ts_flush = self.current + self.interval;
             }
-            return self.flush();
+            let packets = self.flush();
+            return packets;
         }
 
         Ok(((false, Vec::new()), Vec::new()))
@@ -1205,6 +1213,22 @@ impl<Output: Write> Kcp<Output> {
         self.nocwnd = nc;
     }
 
+
+
+    /// raw data sending for SCReAM packets without KCP header
+    pub fn output_raw(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.output.write(data)
+    }
+
+    pub fn get_rcv_nxt(&self) -> u32 {
+        return self.rcv_nxt
+    }
+
+    pub fn get_una(&self) -> u32 {
+        return self.snd_una;
+    }
+
+
     /// Set `wndsize`
     /// set maximum window size: `sndwnd=32`, `rcvwnd=32` by default
     pub fn set_wndsize(&mut self, sndwnd: u16, rcvwnd: u16) {
@@ -1215,6 +1239,10 @@ impl<Output: Write> Kcp<Output> {
         if rcvwnd > 0 {
             self.rcv_wnd = cmp::max(rcvwnd, KCP_WND_RCV) as u16;
         }
+    }
+
+    pub fn get_kcp_scream_feedback(&self) -> u8 {
+        KCP_CMD_SCRM_FEEDBACK
     }
 
     /// `snd_wnd` Send window

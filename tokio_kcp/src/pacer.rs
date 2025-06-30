@@ -14,6 +14,7 @@ impl PacketPacer {
         socket: Arc<UdpSocket>,
         target_addr: SocketAddr,
         mut pacing_rate_rx: watch::Receiver<f32>,
+
     ) -> Self {
         let (packet_tx, mut packet_rx) = mpsc::channel::<Vec<u8>>(256);
 

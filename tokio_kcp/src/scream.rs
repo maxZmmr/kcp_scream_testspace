@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::HashMap, time::{Duration, Instant}};
+use std::{cmp::min, collections::HashMap, convert::TryInto, time::{Duration, Instant, UNIX_EPOCH}};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::SystemTime;
@@ -14,6 +14,11 @@ const POST_CONGESTION_DELAY_RTT: f32 = 4.0;
 const MUL_INCREASE_FACTOR: f32 = 0.02;
 const PACKET_PACING_HEADROOM: f32 = 1.25;
 
+#[derive(Debug, Clone, Copy)]
+pub struct FeedbackPacketInfo {
+    pub seq_number: u32,
+    pub reception_time_ms: u64,
+}
 
 #[derive(Debug)]
 struct PacketInfo {
@@ -53,6 +58,10 @@ pub struct ScreamCongestionControl {
     // logging and small helpers
     first_rtt_measurement: bool,
     loss_for_log: bool,
+
+    // for packet feedback
+    received_packets_for_feedback: Vec<FeedbackPacketInfo>,
+    last_feedback_time: Instant,
 }
 
 impl ScreamCongestionControl {
@@ -84,7 +93,10 @@ impl ScreamCongestionControl {
             packets_in_flight: HashMap::new(),
 
             first_rtt_measurement: true,
-            loss_for_log: false,                
+            loss_for_log: false,   
+            
+            received_packets_for_feedback: Vec::new(),
+            last_feedback_time: Instant::now(),             
         }
     }
 
@@ -129,6 +141,7 @@ impl ScreamCongestionControl {
             return;
         }
 
+
         // scaling factor -> throttle up slowly after congestion event
         let post_congestion_scale = (self.last_congestion_detected_time.elapsed().as_secs_f32()
             / (POST_CONGESTION_DELAY_RTT * self.s_rtt.max(0.01))).clamp(0.0, 1.0);
@@ -160,6 +173,42 @@ impl ScreamCongestionControl {
         self.packets_in_flight.insert(seq_number, info);
         self.bytes_in_flight += size as u32;
         self.max_bytes_in_flight = self.max_bytes_in_flight.max(self.bytes_in_flight);
+    }
+
+     pub fn on_packet_received(&mut self, seq_number: u32, size: usize, _reception_time: Instant) {
+        let reception_time_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.received_packets_for_feedback.push(FeedbackPacketInfo { 
+            seq_number: seq_number,
+            reception_time_ms: reception_time_ms,
+        });
+    }
+
+    pub fn create_feedback_packet(&mut self) -> Option<Vec<u8>>  {
+        if self .received_packets_for_feedback.is_empty() {
+            return None;
+        }
+
+        // 12 bytes per entry -> 4 for sn and 8 for timestamp
+        let mut feedback_data = Vec::with_capacity(self.received_packets_for_feedback.len() * 12);
+
+        for info in &self.received_packets_for_feedback {
+            feedback_data.extend_from_slice((&info.seq_number.to_le_bytes()));
+            feedback_data.extend_from_slice(&info.reception_time_ms.to_le_bytes());
+        }
+
+        self.received_packets_for_feedback.clear();
+        self.last_feedback_time = Instant::now();
+        Some(feedback_data)
+    }
+
+    pub fn on_feedback(&mut self, data: &[u8], feedback_arrival_time: Instant) {
+        for chunk in data.chunks_exact(12) {
+            let seq_number = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
+            self.on_ack(seq_number, feedback_arrival_time);
+        }
     }
 
     pub fn on_rtt(&mut self) {
@@ -268,6 +317,9 @@ impl ScreamCongestionControl {
     }
 
 
+    pub fn get_last_feedback_time(&self) -> Instant {
+        return self.last_feedback_time
+    }
 
     pub fn get_target_bitrate(&self) -> f32 {
         if self.s_rtt <= 0.0 { return 500_000.0; }
