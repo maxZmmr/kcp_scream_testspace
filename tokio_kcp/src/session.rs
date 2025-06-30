@@ -311,6 +311,10 @@ impl KcpSessionManager {
         conv
     }
 
+    pub fn get(&self, peer_addr: &SocketAddr) -> Option<Arc<KcpSession>> {
+        self.sessions.get(peer_addr).map(|s| s.0.clone())
+    }
+
     pub fn close_peer(&mut self, peer_addr: SocketAddr) {
         self.sessions.remove(&peer_addr);
     }

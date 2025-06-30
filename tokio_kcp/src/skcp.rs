@@ -15,10 +15,7 @@ use tokio::{
     }
 };
 use crate::{
-    scream::ScreamCongestionControl,
-    utils::now_millis,
-    KcpConfig,
-    pacer::PacketPacer,
+    pacer::PacketPacer, scream::{self, ScreamCongestionControl}, utils::now_millis, KcpConfig
 };
 
 
@@ -79,7 +76,7 @@ impl Write for PacerOutput {
 #[derive(Debug)]
 pub struct KcpSocket {
     kcp: Kcp<PacerOutput>,
-    scream: ScreamCongestionControl,
+    pub(crate) scream: ScreamCongestionControl,
     pacing_rate_tx: watch::Sender<f32>,
     last_update: Instant,
     socket: Arc<UdpSocket>,
@@ -140,27 +137,11 @@ impl KcpSocket {
 
         if buf.len() >= KCP_OVERHEAD {
             let cmd = buf[4];
-            if cmd == self.kcp.get_kcp_scream_feedback() {
-                let una = self.kcp.get_una();
-                self.kcp.parse_una(una);
-
-
-
-                self.scream.on_feedback(&buf[KCP_OVERHEAD..], now);
-
-                let feedback_payload = &buf[KCP_OVERHEAD..];
-                for chunk in feedback_payload.chunks_exact(12) {
-                    let sn = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-                    self.kcp.parse_ack(sn);
-                }
-                self.kcp.shrink_buf();
-
-
-
-
-                self.try_wake_pending_waker();
-                return Ok(true);
-            }
+            
+            
+            self.try_wake_pending_waker();
+            return Ok(true);
+            
         }
 
         let (acked_sns, received_push_sns) = self.kcp.input(buf)?;
@@ -294,7 +275,7 @@ impl KcpSocket {
         Ok(())
     }
 
-    fn try_wake_pending_waker(&mut self) -> bool {
+    pub fn try_wake_pending_waker(&mut self) -> bool {
         let mut waked = false;
 
         if self.pending_sender.is_some()
@@ -341,19 +322,12 @@ impl KcpSocket {
 
         if self.scream.get_last_feedback_time().elapsed() >= Duration::from_millis(10) {
             if let Some(feedback_data) = self.scream.create_feedback_packet() {
-                let mut raw_packet = Vec::with_capacity(KCP_OVERHEAD + feedback_data.len());
+                let mut scream_packet = Vec::with_capacity(4 + feedback_data.len());
+                scream_packet.put_u32_le(scream::SCREAM_FEEDBACK_HEADER);
+                scream_packet.extend_from_slice(&feedback_data);
 
-                raw_packet.put_u32_le(self.kcp.conv()); // conv
-                raw_packet.put_u8(self.kcp.get_kcp_scream_feedback()); // cmd
-                raw_packet.put_u8(0); // frg
-                raw_packet.put_u16_le(self.kcp.wnd_unused()); // wnd
-                raw_packet.put_u32_le(0); // ts
-                raw_packet.put_u32_le(0); // sn
-                raw_packet.put_u32_le(self.kcp.get_rcv_nxt()); // una
-                raw_packet.put_u32_le(feedback_data.len() as u32); // len
-                raw_packet.extend_from_slice(&feedback_data);
-
-                if let Err(e) = self.kcp.output_raw(&raw_packet) {
+                // send directly through pacer
+                if let Err(e) = self.kcp.output_raw(&scream_packet) {
                     error!("Failed to send raw SCReAM feedback packet: {}", e);
                 }
             }

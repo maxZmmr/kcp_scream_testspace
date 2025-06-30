@@ -4,19 +4,21 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
+    time::Instant,
 };
 
 use byte_string::ByteStr;
+use bytes::Buf;
 use kcp::{Error as KcpError, KcpResult};
 use log::{debug, error, trace};
 use tokio::{
     net::{ToSocketAddrs, UdpSocket},
     sync::mpsc,
     task::JoinHandle,
-    time,
+    time::{self},
 };
 
-use crate::{config::KcpConfig, session::KcpSessionManager, stream::KcpStream};
+use crate::{config::KcpConfig, scream, session::KcpSessionManager, stream::KcpStream};
 
 #[derive(Debug)]
 pub struct KcpListener {
@@ -66,6 +68,18 @@ impl KcpListener {
                             Ok((n, peer_addr)) => {
                                 let packet = &mut packet_buffer[..n];
 
+                                // check if it is SCReAMv2 header
+                                if n > 4 && (&packet[..4]).get_u32_le() == scream::SCREAM_FEEDBACK_HEADER {
+                                    if let Some(session) = sessions.get(&peer_addr) {
+                                        let mut kcp_socket = session.kcp_socket().lock();
+                                        kcp_socket.scream.on_feedback(&packet[4..], Instant::now());
+                                        
+                                        kcp_socket.try_wake_pending_waker();
+                                    }
+                                    continue;
+                                }
+
+                                // regluar KCP packet
                                 trace!("received peer: {}, {:?}", peer_addr, ByteStr::new(packet));
 
                                 if packet.len() < kcp::KCP_OVERHEAD {

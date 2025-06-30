@@ -3,6 +3,9 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::SystemTime;
 
+// scream feedback header to seperate KCP and SCReAMv2 ACK's
+pub const SCREAM_FEEDBACK_HEADER: u32 = 0x5C4D4642; // "SCMFB" in hex
+
 const BASE_RTT_WINDOW: Duration = Duration::from_secs(10);
 const QDELAY_TARGET_LO: f32 = 0.06; 
 const MIN_REF_WND: u32 = 2000;     
