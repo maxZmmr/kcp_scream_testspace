@@ -20,6 +20,5 @@ async fn main() {
         stream.write_all(&buffer[..n]).await.unwrap();
 
         let n = stream.read(&mut buffer).await.unwrap();
-        println!("{}", unsafe { str::from_utf8_unchecked(&buffer[..n]) });
     }
 }

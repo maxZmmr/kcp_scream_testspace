@@ -67,8 +67,6 @@ impl KcpListener {
                             }
                             Ok((n, peer_addr)) => {
                                 let packet = &mut packet_buffer[..n];
-
-                                println!("{:?}", (&packet[..4]).get_u32_le() == scream::SCREAM_FEEDBACK_HEADER);
                                 
                                 // check if it is SCReAMv2 header
                                 if n > 4 && (&packet[..4]).get_u32_le() == scream::SCREAM_FEEDBACK_HEADER {
@@ -92,15 +90,14 @@ impl KcpListener {
                                 }
 
                                 let mut conv = kcp::get_conv(packet);
+                                let sn = kcp::get_sn(packet);
+
                                 if conv == 0 {
                                     // Allocate a conv for client.
                                     conv = sessions.alloc_conv();
                                     debug!("allocate {} conv for peer: {}", conv, peer_addr);
-
                                     kcp::set_conv(packet, conv);
                                 }
-
-                                let sn = kcp::get_sn(packet);
 
                                 let session = match sessions.get_or_create(&config, conv, sn, &udp, peer_addr, &close_tx).await {
                                     Ok((s, created)) => {

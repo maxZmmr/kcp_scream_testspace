@@ -20,7 +20,6 @@ const KCP_CMD_PUSH: u8 = 81; // cmd: push data
 const KCP_CMD_ACK: u8 = 82; // cmd: ack
 const KCP_CMD_WASK: u8 = 83; // cmd: window probe (ask)
 const KCP_CMD_WINS: u8 = 84; // cmd: window size (tell)
-const KCP_CMD_SCRM_FEEDBACK: u8 = 85;  // cmd: SCReAMv2 feedback
 
 const KCP_ASK_SEND: u32 = 1; // need to send IKCP_CMD_WASK
 const KCP_ASK_TELL: u32 = 2; // need to send IKCP_CMD_WINS
@@ -1073,7 +1072,6 @@ impl<Output: Write> Kcp<Output> {
                 self.incr = self.mss;
             }
         } 
-
             
         Ok((((lost || change > 0), sns_of_lost), new_packets))
     }

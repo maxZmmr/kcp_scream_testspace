@@ -19,40 +19,12 @@ use crate::{
 };
 
 
-/// Writer for sending packets to the underlying UdpSocket
-// struct UdpOutput {
-//     socket: Arc<UdpSocket>,
-//     target_addr: SocketAddr,
-//     delay_tx: mpsc::UnboundedSender<Vec<u8>>,
-// }
+
 
 struct PacerOutput {
     pacer: PacketPacer,
 }
 
-// impl UdpOutput {
-//     /// Create a new Writer for writing packets to UdpSocket
-//     pub fn new(socket: Arc<UdpSocket>, target_addr: SocketAddr) -> UdpOutput {
-//         let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
-//         {
-//             let socket = socket.clone();
-//             tokio::spawn(async move {
-//                 while let Some(buf) = delay_rx.recv().await {
-//                     if let Err(err) = socket.send_to(&buf, target_addr).await {
-//                         error!("[SEND] UDP delayed send failed, error: {}", err);
-//                     }
-//                 }
-//             });
-//         }
-
-//         UdpOutput {
-//             socket,
-//             target_addr,
-//             delay_tx,
-//         }
-//     }
-// }
 
 impl Write for PacerOutput {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -134,17 +106,8 @@ impl KcpSocket {
     /// Call every time you got data from transmission
     pub fn input(&mut self, buf: &[u8]) -> KcpResult<bool> {
         let now = Instant::now();
-
-        if buf.len() >= KCP_OVERHEAD {
-            let cmd = buf[4];
-            
-            
-            self.try_wake_pending_waker();
-            return Ok(true);
-            
-        }
-
         let (acked_sns, received_push_sns) = self.kcp.input(buf)?;
+
         for (seq_number, _size) in acked_sns {
             self.scream.on_ack(seq_number, now);
         }
@@ -200,13 +163,15 @@ impl KcpSocket {
         self.sent_first = true;
 
         if self.kcp.wait_snd() >= self.kcp.snd_wnd() as usize || self.kcp.wait_snd() >= self.kcp.rmt_wnd() as usize {
-            let _ = self.kcp.flush()?;
+            let flush_result = self.kcp.flush()?;
+            self.process_flush_result(Ok(flush_result))?;
         }
 
         self.last_update = Instant::now();
 
         if self.flush_write {
-            let _ = self.kcp.flush()?;
+            let flush_result = self.kcp.flush()?;
+            self.process_flush_result(Ok(flush_result))?;
         }
 
         Ok(n).into()
@@ -270,7 +235,8 @@ impl KcpSocket {
     }
 
     pub fn flush(&mut self) -> KcpResult<()> {
-        let _ = self.kcp.flush()?;
+        let flush_result = self.kcp.flush()?;
+        self.process_flush_result(Ok(flush_result))?;
         self.last_update = Instant::now();
         Ok(())
     }
@@ -303,22 +269,27 @@ impl KcpSocket {
         waked
     }
 
+    fn process_flush_result(&mut self, result: KcpResult<((bool, Vec<u32>), Vec<(u32, usize)>)>) -> KcpResult<()> {
+        match result {
+            Ok((packet_loss_detected, new_packets)) => {
+                if packet_loss_detected.0 {
+                    for sn in packet_loss_detected.1 {
+                        self.scream.on_packet_loss(sn);
+                    }
+                }
+                for (seq_number, size) in new_packets {
+                    self.scream.on_packet_sent(seq_number, size);
+                }
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
 
     pub fn update(&mut self) -> KcpResult<Instant> {
         let now = now_millis();
-        let (packet_loss_detected, new_packets ) = self.kcp.update(now)?;
-
-       
-
-        if packet_loss_detected.0 { // bool if something was lost
-            for sn in packet_loss_detected.1 { // sequence number(s) of lost packet(s)
-                self.scream.on_packet_loss(sn); 
-            }
-        }
-
-        for (seq_number, size) in new_packets {
-            self.scream.on_packet_sent(seq_number, size);
-        }
+        let update_result = self.kcp.update(now);
+        self.process_flush_result(update_result)?;
 
         if self.scream.get_last_feedback_time().elapsed() >= Duration::from_millis(10) {
             if let Some(feedback_data) = self.scream.create_feedback_packet() {
@@ -326,15 +297,13 @@ impl KcpSocket {
                 scream_packet.put_u32_le(scream::SCREAM_FEEDBACK_HEADER);
                 scream_packet.extend_from_slice(&feedback_data);
 
-                // send directly through pacer
+                // send directly through pacer -> no kcp header
                 if let Err(e) = self.kcp.output_raw(&scream_packet) {
                     error!("Failed to send raw SCReAM feedback packet: {}", e);
                 }
             }
         }
 
-
-        // Prüfen, ob seit dem letzten periodischen Update eine RTT vergangen ist
         let s_rtt_duration = Duration::from_secs_f32(self.scream.get_s_rtt().max(0.02)); 
         if self.scream.get_last_periodic_update_time().elapsed() >= s_rtt_duration {
             self.scream.on_rtt();

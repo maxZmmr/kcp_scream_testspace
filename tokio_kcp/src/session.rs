@@ -113,7 +113,10 @@ impl KcpSession {
                                         let mut socket = session.socket.lock();
                                         socket.scream.on_feedback(&input_buffer[4..], std::time::Instant::now());
                                         socket.try_wake_pending_waker();
-                                    } else if input_buffer.len() < kcp::KCP_OVERHEAD {
+                                        continue;
+                                    } 
+                                    
+                                    if input_buffer.len() < kcp::KCP_OVERHEAD {
                                         error!("packet too short, received {} bytes, but at least {} bytes",
                                                input_buffer.len(),
                                                kcp::KCP_OVERHEAD);
