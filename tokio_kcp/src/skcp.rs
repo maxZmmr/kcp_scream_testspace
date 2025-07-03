@@ -50,6 +50,7 @@ pub struct KcpSocket {
     kcp: Kcp<PacerOutput>,
     pub(crate) scream: ScreamCongestionControl,
     pacing_rate_tx: watch::Sender<f32>,
+    target_bitrate_tx: watch::Sender<f32>,
     last_update: Instant,
     socket: Arc<UdpSocket>,
     flush_write: bool,
@@ -68,8 +69,9 @@ impl KcpSocket {
         socket: Arc<UdpSocket>,
         target_addr: SocketAddr,
         stream: bool,
-    ) -> KcpResult<KcpSocket> {
+    ) -> KcpResult<(KcpSocket, watch::Receiver<f32>)> {
         let (pacing_rate_tx, pacing_rate_rx) = watch::channel(1_000_000.0);
+        let (target_bitrate_tx, target_bitrate_rx) = watch::channel(500_000.0);
         let pacer = PacketPacer::new(socket.clone(), target_addr, pacing_rate_rx);
         let output = PacerOutput { pacer };
         
@@ -87,10 +89,11 @@ impl KcpSocket {
 
         kcp.update(now_millis())?;
 
-        Ok(KcpSocket {
+        let socket = KcpSocket {
             kcp,
             scream: ScreamCongestionControl::new(),
             pacing_rate_tx,
+            target_bitrate_tx,
             last_update: Instant::now(),
             socket,
             flush_write: c.flush_write,
@@ -100,7 +103,8 @@ impl KcpSocket {
             pending_receiver: None,
             closed: false,
             allow_recv_empty_packet: c.allow_recv_empty_packet,
-        })
+        };
+        Ok((socket, target_bitrate_rx))
     }
 
     /// Call every time you got data from transmission
@@ -109,11 +113,11 @@ impl KcpSocket {
         let (acked_sns, received_push_sns) = self.kcp.input(buf)?;
 
         for (seq_number, _size) in acked_sns {
-            self.scream.on_ack(seq_number, now);
+            self.scream.on_ack_kcp(seq_number);
         }
         
-        for (seq_number, size) in received_push_sns {
-            self.scream.on_packet_received(seq_number, size, now);
+        for seq_number in received_push_sns {
+            self.scream.on_packet_received(seq_number, now);
         }
 
         self.last_update = now;
@@ -320,7 +324,13 @@ impl KcpSocket {
 
         let new_pacing_rate = self.scream.get_pacing_rate();
         if self.pacing_rate_tx.send(new_pacing_rate).is_err() {
-            error!(" Pacer task seems to have died.");
+            error!("Pacer task seems to have died.");
+        }
+
+
+        let new_target_bitrate = self.scream.get_target_bitrate();
+        if self.target_bitrate_tx.send(new_target_bitrate).is_err() {
+            error!("Target bitrate could not be sent.");
         }
 
 
@@ -417,7 +427,7 @@ mod test {
             tokio::spawn(async move {
                 loop {
                     let mut kcp = kcp1.lock().await;
-                    let next = kcp.update().expect("update");
+                    let next = kcp.0.update().expect("update");
                     trace!("kcp1 next tick {:?}", next);
                     time::sleep_until(Instant::from_std(next)).await;
                 }
@@ -429,7 +439,7 @@ mod test {
             tokio::spawn(async move {
                 loop {
                     let mut kcp = kcp2.lock().await;
-                    let next = kcp.update().expect("update");
+                    let next = kcp.0.update().expect("update");
                     trace!("kcp2 next tick {:?}", next);
                     time::sleep_until(Instant::from_std(next)).await;
                 }
@@ -439,7 +449,7 @@ mod test {
         const SEND_BUFFER: &[u8] = b"HELLO WORLD";
 
         {
-            let n = kcp1.lock().await.send(SEND_BUFFER).await.unwrap();
+            let n = kcp1.lock().await.0.send(SEND_BUFFER).await.unwrap();
             assert_eq!(n, SEND_BUFFER.len());
         }
 
@@ -457,12 +467,12 @@ mod test {
                 }
 
                 let mut kcp2 = kcp2.lock().await;
-                kcp2.input(packet).unwrap();
+                kcp2.0.input(packet).unwrap();
 
-                match kcp2.try_recv(&mut buf) {
+                match kcp2.0.try_recv(&mut buf) {
                     Ok(n) => {
                         let received = &buf[..n];
-                        kcp2.send(received).await.unwrap();
+                        kcp2.0.send(received).await.unwrap();
                     }
                     Err(KcpError::RecvQueueEmpty) => {
                         continue;
@@ -483,9 +493,9 @@ mod test {
                 let packet = &buf[..n];
 
                 let mut kcp1 = kcp1.lock().await;
-                kcp1.input(packet).unwrap();
+                kcp1.0.input(packet).unwrap();
 
-                match kcp1.try_recv(&mut buf) {
+                match kcp1.0.try_recv(&mut buf) {
                     Ok(n) => {
                         let received = &buf[..n];
                         assert_eq!(received, SEND_BUFFER);

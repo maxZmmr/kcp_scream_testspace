@@ -12,13 +12,14 @@ use kcp::{Error as KcpError, KcpResult};
 use log::trace;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::UdpSocket,
+    net::UdpSocket, sync::watch,
 };
 
 use crate::{config::KcpConfig, session::KcpSession, skcp::KcpSocket};
 
 pub struct KcpStream {
     session: Arc<KcpSession>,
+    target_bitrate_rx: watch::Receiver<f32>,
     recv_buffer: Vec<u8>,
     recv_buffer_pos: usize,
     recv_buffer_cap: usize,
@@ -87,15 +88,16 @@ impl KcpStream {
         addr: SocketAddr,
     ) -> KcpResult<KcpStream> {
         let udp = Arc::new(udp);
-        let socket = KcpSocket::new(config, conv, udp, addr, config.stream)?;
+        let (socket, target_bitrate_rx) = KcpSocket::new(config, conv, udp, addr, config.stream)?;
 
-        let session = KcpSession::new_shared(socket, config.session_expire, None);
+        let session = KcpSession::new_shared((socket, target_bitrate_rx.clone()), config.session_expire, None);
 
         Ok(KcpStream::with_session(session))
     }
 
     pub(crate) fn with_session(session: Arc<KcpSession>) -> KcpStream {
         KcpStream {
+            target_bitrate_rx: session.target_bitrate_rx.clone(),
             session,
             recv_buffer: Vec::new(),
             recv_buffer_pos: 0,
@@ -171,6 +173,10 @@ impl KcpStream {
     /// `recv` data into `buf`
     pub async fn recv(&mut self, buf: &mut [u8]) -> KcpResult<usize> {
         future::poll_fn(|cx| self.poll_recv(cx, buf)).await
+    }
+
+    pub fn get_target_bitrate_receiver(&self) -> watch::Receiver<f32> {
+        self.target_bitrate_rx.clone()
     }
 
     /// Get the `KcpSession` for this `KcpStream`

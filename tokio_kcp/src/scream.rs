@@ -27,6 +27,7 @@ pub struct FeedbackPacketInfo {
 struct PacketInfo {
     timestamp: Instant,
     size: usize,
+    acked_by_kcp: bool,
 }
 
 #[derive(Debug)]
@@ -172,13 +173,13 @@ impl ScreamCongestionControl {
 
     pub fn on_packet_sent(&mut self, seq_number: u32, size: usize) {
         let now = Instant::now();
-        let info = PacketInfo{ timestamp: now, size };
+        let info = PacketInfo{ timestamp: now, size: size, acked_by_kcp: false };
         self.packets_in_flight.insert(seq_number, info);
         self.bytes_in_flight += size as u32;
         self.max_bytes_in_flight = self.max_bytes_in_flight.max(self.bytes_in_flight);
     }
 
-     pub fn on_packet_received(&mut self, seq_number: u32, size: usize, _reception_time: Instant) {
+     pub fn on_packet_received(&mut self, seq_number: u32, reception_time: Instant) {
         let reception_time_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -190,7 +191,7 @@ impl ScreamCongestionControl {
     }
 
     pub fn create_feedback_packet(&mut self) -> Option<Vec<u8>>  {
-        if self .received_packets_for_feedback.is_empty() {
+        if self.received_packets_for_feedback.is_empty() {
             return None;
         }
 
@@ -207,10 +208,12 @@ impl ScreamCongestionControl {
         Some(feedback_data)
     }
 
+    // when an SCReAMv2 feedback header packet is delivered
     pub fn on_feedback(&mut self, data: &[u8], feedback_arrival_time: Instant) {
         for chunk in data.chunks_exact(12) {
             let seq_number = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-            self.on_ack(seq_number, feedback_arrival_time);
+            //let _reception_time_ms = u64::from_le_bytes(chunk[4..12].try_into().unwrap());
+            self.on_ack_scream(seq_number, feedback_arrival_time);
         }
     }
 
@@ -228,11 +231,23 @@ impl ScreamCongestionControl {
         self.last_periodic_update_time = Instant::now();
     }
 
-    // everytime a packet gets ACK'ed the congestion_window gets increased and decreased (only after one s_rtt)
-    pub fn on_ack(&mut self, seq_number: u32, ack_timestamp: Instant) {
+    // gets called everytime there is an KCP ACK 
+    pub fn on_ack_kcp(&mut self, seq_number: u32) {
+        if let Some(info) = self.packets_in_flight.get_mut(&seq_number) {
+            if !info.acked_by_kcp {
+                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(info.size as u32);
+                info.acked_by_kcp = true;
+            }
+        }
+    }
+
+    // everytime a SCReAMv2 feedback packet arrives
+    pub fn on_ack_scream(&mut self, seq_number: u32, ack_timestamp: Instant) {
         if let Some(info) = self.packets_in_flight.remove(&seq_number) {
-            // remove from bytes in flight
-            self.bytes_in_flight = self.bytes_in_flight.saturating_sub(info.size as u32);
+            if !info.acked_by_kcp {
+                // remove from bytes in flight
+                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(info.size as u32);
+            }
 
             // add ACK'ed bytes to the list for this rtt
             self.bytes_newly_acked += info.size as u32;
@@ -252,6 +267,8 @@ impl ScreamCongestionControl {
                 let rtt_now_secs = latest_rtt.as_secs_f32();
                 self.rtt_var = (1.0 - beta) * self.rtt_var + beta * (self.s_rtt - rtt_now_secs).abs();
                 self.s_rtt = (1.0 - alpha) * self.s_rtt + alpha * rtt_now_secs;
+
+                println!("{}", s_rtt)
             }
 
             // update base_rtt every 10 seconds
@@ -262,10 +279,6 @@ impl ScreamCongestionControl {
                 self.base_rtt_update_time = Instant::now();
             }
             self.qdelay = latest_rtt.saturating_sub(self.base_rtt);
-
-
-            // println!("base_rtt: {:?}, and latest_rtt: {:?}", self.base_rtt, latest_rtt);
-
             let qdelay_sample = self.qdelay.as_secs_f32();
             let q_alpha = 0.1;
             self.qdelay_avg = (1.0 - q_alpha) * self.qdelay_avg + q_alpha * qdelay_sample;

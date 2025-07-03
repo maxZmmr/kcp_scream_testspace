@@ -17,7 +17,7 @@ use log::{error, trace};
 use spin::Mutex as SpinMutex;
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc, Notify},
+    sync::{mpsc, watch, Notify},
     time::{self, Instant},
 };
 
@@ -25,6 +25,7 @@ use crate::{skcp::KcpSocket, KcpConfig};
 
 pub struct KcpSession {
     socket: SpinMutex<KcpSocket>,
+    pub target_bitrate_rx: watch::Receiver<f32>,
     closed: AtomicBool,
     session_expire: Option<Duration>,
     session_close_notifier: Option<(mpsc::Sender<SocketAddr>, SocketAddr)>,
@@ -58,12 +59,14 @@ impl Debug for KcpSession {
 impl KcpSession {
     fn new(
         socket: KcpSocket,
+        target_bitrate_rx: watch::Receiver<f32>,
         session_expire: Option<Duration>,
         session_close_notifier: Option<(mpsc::Sender<SocketAddr>, SocketAddr)>,
         input_tx: mpsc::Sender<Vec<u8>>,
     ) -> KcpSession {
         KcpSession {
             socket: SpinMutex::new(socket),
+            target_bitrate_rx,
             closed: AtomicBool::new(false),
             session_expire,
             session_close_notifier,
@@ -73,7 +76,7 @@ impl KcpSession {
     }
 
     pub fn new_shared(
-        socket: KcpSocket,
+        (socket, target_bitrate_rx): (KcpSocket, watch::Receiver<f32>),
         session_expire: Option<Duration>,
         session_close_notifier: Option<(mpsc::Sender<SocketAddr>, SocketAddr)>,
     ) -> Arc<KcpSession> {
@@ -85,6 +88,7 @@ impl KcpSession {
 
         let session = Arc::new(KcpSession::new(
             socket,
+            target_bitrate_rx,
             session_expire,
             session_close_notifier,
             input_tx,
@@ -344,9 +348,9 @@ impl KcpSessionManager {
                     // This is the first packet received from this peer.
                     // Recreate a new session for this specific client.
 
-                    let socket = KcpSocket::new(config, conv, udp.clone(), peer_addr, config.stream)?;
+                    let (socket, target_bitrate_rx) = KcpSocket::new(config, conv, udp.clone(), peer_addr, config.stream)?;
                     let session = KcpSession::new_shared(
-                        socket,
+                        (socket, target_bitrate_rx),
                         config.session_expire,
                         Some((session_close_notifier.clone(), peer_addr)),
                     );
@@ -366,9 +370,9 @@ impl KcpSessionManager {
                 }
             }
             Entry::Vacant(vac) => {
-                let socket = KcpSocket::new(config, conv, udp.clone(), peer_addr, config.stream)?;
+                let (socket, target_bitrate_rx) = KcpSocket::new(config, conv, udp.clone(), peer_addr, config.stream)?;
                 let session = KcpSession::new_shared(
-                    socket,
+                    (socket, target_bitrate_rx),
                     config.session_expire,
                     Some((session_close_notifier.clone(), peer_addr)),
                 );

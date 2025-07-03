@@ -79,26 +79,42 @@ async fn run_client() -> std::io::Result<()> {
     println!("Client: Verbunden.");
 
     let data_to_send = vec![1u8; 4096];
-    // recv_buf und total_received_bytes werden nicht mehr benötigt
     let mut total_sent_bytes: u64 = 0;
     let start_time = Instant::now();
-    let test_duration = Duration::from_secs(15);
+    let test_duration = Duration::from_secs(90);
 
     println!("Client: Sende Daten für {} Sekunden...", test_duration.as_secs());
+    
+    let mut target_bitrate_rx = stream.get_target_bitrate_receiver();
 
     while start_time.elapsed() < test_duration {
-        // Daten senden
+        // check bitrate
+        tokio::select! {
+            _ = target_bitrate_rx.changed() => { }
+            
+            _ = tokio::time::sleep(Duration::from_millis(1)) => { }
+        }    
+
+        let target_bitrate_bps = *target_bitrate_rx.borrow();
+        let bits_to_send = (data_to_send.len() * 8) as f32;
+        let sleep_duration_secs = if target_bitrate_bps > 0.0 {
+            bits_to_send / target_bitrate_bps
+        } else {
+            0.1
+        };
+
         match stream.send(&data_to_send).await {
             Ok(n) => {
                 total_sent_bytes += n as u64;
             }
             Err(e) => {
-                eprintln!("Client Sende-Fehler: {}", e);
+                eprintln!("Client sending Exception: {}", e);
                 break;
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_secs_f32(sleep_duration_secs)).await;
+
     }
 
     let elapsed_secs = start_time.elapsed().as_secs_f64();

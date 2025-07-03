@@ -644,7 +644,7 @@ impl<Output: Write> Kcp<Output> {
     }
 
     /// Call this when you received a packet from raw connection
-    pub fn input(&mut self, buf: &[u8]) -> KcpResult<(Vec<(u32, usize)>, Vec<(u32, usize)>)> {
+    pub fn input(&mut self, buf: &[u8]) -> KcpResult<(Vec<(u32, usize)>, Vec<(u32)>)> {
         let input_size = buf.len();
         let mut acked_sns = Vec::new();
         let mut received_push_sns = Vec::new();
@@ -756,7 +756,7 @@ impl<Output: Write> Kcp<Output> {
                         self.ack_push(sn, ts);
                         
                         if timediff(sn, self.rcv_nxt) >= 0 {
-                            received_push_sns.push((sn,len));
+                            received_push_sns.push(sn);
                         
                             let mut sbuf = BytesMut::with_capacity(len as usize);
                             unsafe {
